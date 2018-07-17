@@ -79,18 +79,38 @@ from argparse import ArgumentParser
 from datetime import datetime
 
 
-# Global execution settings, because passing variables is for noobs
-class Settings(object):
-    top_n = 100
-    rows_per_minute = 5
-    order_by = 'duration'
-    min_count = 5
+class Config(object):
+    """
+    Slow query analysis configuration.
+    """
+
+    def __init__(self, top_n=100, rows_per_minute=5, order_by='duration', min_count=5, schema=None, queries=None,
+                 tags=None):
+        """
+        Init.
+
+        :param int top_n: Number of entries to include in the top N reports.
+        :param int rows_per_minute: Number of entries to include per minute in the per minute reports.
+        :param str order_by: What to order the results by.
+        :param int min_count: Minimum number of log entries to be included in reporting at all.
+        :param dict schema: Processed schema dictionary.
+        :param list[dict] queries: Additional query patterns for primary key identification.
+        :param dict tags: Dictionary of tag: keyspace mappings.
+        """
+        self.top_n = top_n
+        self.rows_per_minute = rows_per_minute
+        self.order_by = order_by
+        self.min_count = min_count
+        self.schema = schema or {}
+        self.queries = queries
+        self.tags = tags
 
 
-def run(data_files, schema_file=None, queries_file=None, tags_file=None):
+def run(config, data_files, schema_file=None, queries_file=None, tags_file=None):
     """
     Run.
 
+    :param Config config: Configuration.
     :param list[str] data_files: JSON Kibana log files.
     :param str|None schema_file: Schema file.
     :param str|None queries_file: Additional query patterns file.
@@ -98,28 +118,24 @@ def run(data_files, schema_file=None, queries_file=None, tags_file=None):
     """
     Timer.start('total')
     # Load additional query patterns
-    patterns = None
     if queries_file:
         with open(queries_file, 'r') as fh:
-            patterns = json.load(fh)
+            config.queries = json.load(fh)
     # Process Schema
     if schema_file:
         with open(schema_file, 'r') as fh:
             schema_string = fh.read()
-        schema = SchemaProcessor.process(schema_string)
-    else:
-        schema = {}
+        config.schema = SchemaProcessor.process(schema_string)
     # Process tag keyspace mapping file
-    tag_keyspaces = None
     if tags_file:
         with open(tags_file, 'r') as fh:
-            tag_keyspaces = json.load(fh)
+            config.tags = json.load(fh)
     # Process JSON log files
     processed = []
     for f in data_files:
-        processed += process_file(f, schema, patterns, tag_keyspaces)
+        processed += process_file(f, config)
     # Analyze
-    analysis = analyze(processed)
+    analysis = analyze(processed, config)
     # Write reports
     Reporter.report(analysis)
     Timer.end('total')
@@ -331,14 +347,12 @@ class MessageProcessor(object):
         raise NotImplementedError()
 
     @classmethod
-    def process(cls, log, schema, patterns=None, tag_keyspaces=None):
+    def process(cls, log, config):
         """
         Process batch slow query log.
 
         :param dict log: Slow query log.
-        :param dict schema: Schema.
-        :param list|None patterns: Additional query patterns.
-        :param dict|None tag_keyspaces: Tag: keyspace mappings.
+        :param Config config: Configuration.
 
         :rtype: dict
         :return: Log data.
@@ -370,20 +384,20 @@ class MessageProcessor(object):
         return ret
 
     @classmethod
-    def _get_primary_key(cls, bound_values, keyspace, column_family, schema):
+    def _get_primary_key(cls, bound_values, keyspace, column_family, config):
         """
         Get primary key out of bound values.
 
         :param dict bound_values: Bound values.
         :param str keyspace: Keyspace.
         :param str column_family: Column family.
-        :param dict schema: Schema.
+        :param Config config: Configuration.
 
         :rtype: str|None
         :return: Primary key.
         """
         try:
-            cf_meta = schema[keyspace][column_family]
+            cf_meta = config.schema[keyspace][column_family]
             primary_key = []
             for field in cf_meta['primary_key']:
                 try:
@@ -393,18 +407,17 @@ class MessageProcessor(object):
                         u'Primary key field {} not in bound values for {}.{}'.format(field, keyspace, column_family))
             return '-'.join(primary_key)
         except KeyError:
-            logging.warn(u'No schema for {}.{}'.format(keyspace, column_family))
+            logging.warn(u'No schema for {}.{}. Tags: {}'.format(keyspace, column_family, ', '.join(config.tags)))
             return None
 
     @classmethod
-    def _get_keyspace_cf(cls, table, tags, schema, tag_keyspaces=None):
+    def _get_keyspace_cf(cls, table, tags, config):
         """
         Get keyspace and column family from table segment
 
         :param str table: Table segment, either keyspace.column_family or just column_family.
         :param list[str] tags: Slow query log tags.
-        :param dict schema: Schema.
-        :param dict|None tag_keyspaces: Tag: keyspace mappings.
+        :param Config config: Configuration.
 
         :rtype: tuple[str]
         :return: Keyspace and column family.
@@ -415,30 +428,29 @@ class MessageProcessor(object):
             column_family = column_family.lower()
         else:
             column_family = table.lower()
-            keyspace = cls._guess_keyspace(column_family, tags, schema, tag_keyspaces)
+            keyspace = cls._guess_keyspace(column_family, tags, config)
         return keyspace, column_family
 
     @classmethod
-    def _guess_keyspace(cls, column_family, tags, schema, tag_keyspaces=None):
+    def _guess_keyspace(cls, column_family, tags, config):
         """
         Attempt to find keyspace from column family.
 
         :param str column_family: Column family.
         :param list[str] tags: Slow query log tags.
-        :param dict schema: Schema.
-        :param dict|None tag_keyspaces: Tag: keyspace mappings.
+        :param Config config: Configuration.
 
         :rtype: str|None
         :return: Keyspace.
         """
         if not cls.CF_KEYSPACES:
-            cls._build_keyspace_guesses(schema)
+            cls._build_keyspace_guesses(config.schema)
 
         # Use tag_keyspaces mapping if schema guess is not available
-        if tag_keyspaces and (column_family not in cls.CF_KEYSPACES or cls.CF_KEYSPACES[column_family] == 'unknown'):
+        if config.tags and (column_family not in cls.CF_KEYSPACES or cls.CF_KEYSPACES[column_family] == 'unknown'):
             for tag in tags:
-                if tag in tag_keyspaces:
-                    return tag_keyspaces[tag]
+                if tag in config.tags:
+                    return config.tags[tag]
         try:
             return cls.CF_KEYSPACES[column_family]
         except KeyError:
@@ -480,14 +492,12 @@ class BatchMessageProcessor(MessageProcessor):
         return log['query'].startswith('BEGIN BATCH') or log['query'].startswith('begin batch')
 
     @classmethod
-    def process(cls, log, schema, patterns=None, tag_keyspaces=None):
+    def process(cls, log, config):
         """
         Process batch slow query log.
 
         :param dict log: Slow query log.
-        :param dict schema: Schema.
-        :param list|None patterns: Additional query patterns.
-        :param dict|None tag_keyspaces: Tag: keyspace mappings.
+        :param Config config: Configuration.
 
         :rtype: dict
         :return: Log data.
@@ -517,14 +527,12 @@ class SelectMessageProcessor(MessageProcessor):
         return log['query'].startswith('SELECT') or log['query'].startswith('select')
 
     @classmethod
-    def process(cls, log, schema, patterns=None, tag_keyspaces=None):
+    def process(cls, log, config):
         """
         Process slow query log.
 
         :param dict log: Slow query log.
-        :param dict schema: Schema.
-        :param list|None patterns: Additional query patterns.
-        :param dict|None tag_keyspaces: Tag: keyspace mappings.
+        :param Config config: Configuration.
 
         :rtype: dict
         :return: Log data.
@@ -535,15 +543,15 @@ class SelectMessageProcessor(MessageProcessor):
         bound_values = {}
         if log['bound_values']:
             bound_values = cls._get_bound_values(log['bound_values'])
-        elif patterns:
-            for pattern in patterns:
+        elif config.queries:
+            for pattern in config.queries:
                 if QueryPattern.matches(query, pattern):
                     query, bound_values = QueryPattern.process(query, pattern)
                     break
 
         table_segment = cls._get_table(query)
         if table_segment:
-            keyspace, column_family = cls._get_keyspace_cf(table_segment, log['tags'], schema, tag_keyspaces)
+            keyspace, column_family = cls._get_keyspace_cf(table_segment, log['tags'], config)
             if not keyspace:
                 logging.warn(u'Unable to get keyspace for column family %s. Tags: %s',
                              column_family, ', '.join(log['tags']))
@@ -553,7 +561,7 @@ class SelectMessageProcessor(MessageProcessor):
             column_family = None
 
         if bound_values and keyspace and column_family:
-            primary_key = cls._get_primary_key(bound_values, keyspace, column_family, schema)
+            primary_key = cls._get_primary_key(bound_values, keyspace, column_family, config)
         else:
             primary_key = None
 
@@ -608,14 +616,12 @@ class InsertMessageProcessor(MessageProcessor):
         return log['query'].startswith('INSERT') or log['query'].startswith('insert')
 
     @classmethod
-    def process(cls, log, schema, patterns=None, tag_keyspaces=None):
+    def process(cls, log, config):
         """
         Process slow query log.
 
         :param dict log: Slow query log.
-        :param dict schema: Schema.
-        :param list|None patterns: Additional query patterns.
-        :param dict|None tag_keyspaces: Tag: keyspace mappings.
+        :param Config config: Configuration.
 
         :rtype: dict
         :return: Log data.
@@ -626,7 +632,7 @@ class InsertMessageProcessor(MessageProcessor):
 
         table_segment = cls._get_table(log['query'])
         if table_segment:
-            keyspace, column_family = cls._get_keyspace_cf(table_segment, log['tags'], schema, tag_keyspaces)
+            keyspace, column_family = cls._get_keyspace_cf(table_segment, log['tags'], config)
             if not keyspace:
                 logging.warn(u'Unable to get keyspace for column family %s', column_family)
         else:
@@ -635,7 +641,7 @@ class InsertMessageProcessor(MessageProcessor):
             column_family = None
 
         if bound_values and keyspace and column_family:
-            primary_key = cls._get_primary_key(bound_values, keyspace, column_family, schema)
+            primary_key = cls._get_primary_key(bound_values, keyspace, column_family, config)
         else:
             primary_key = None
 
@@ -685,14 +691,12 @@ class DeleteMessageProcessor(MessageProcessor):
         return log['query'].startswith('DELETE') or log['query'].startswith('delete')
 
     @classmethod
-    def process(cls, log, schema, patterns=None, tag_keyspaces=None):
+    def process(cls, log, config):
         """
         Process slow query log.
 
         :param dict log: Slow query log.
-        :param dict schema: Schema.
-        :param list|None patterns: Additional query patterns.
-        :param dict|None tag_keyspaces: Tag: keyspace mappings.
+        :param Config config: Configuration.
 
         :rtype: dict
         :return: Log data.
@@ -722,14 +726,12 @@ class UpdateMessageProcessor(MessageProcessor):
         return log['query'].startswith('UPDATE') or log['query'].startswith('update')
 
     @classmethod
-    def process(cls, log, schema, patterns=None, tag_keyspaces=None):
+    def process(cls, log, config):
         """
         Process slow query log.
 
         :param dict log: Slow query log.
-        :param dict schema: Schema.
-        :param list|None patterns: Additional query patterns.
-        :param dict|None tag_keyspaces: Tag: keyspace mappings.
+        :param Config config: Configuration.
 
         :rtype: dict
         :return: Log data.
@@ -800,16 +802,14 @@ processors = [
 ]
 
 
-def process_message(timestamp, message, tags, schema, patterns, tag_keyspaces):
+def process_message(timestamp, message, tags, config):
     """
     Process a slow query message string.
 
     :param str timestamp: Timestamp.
     :param str message: Slow query log message.
     :param list[str] tags: Tags.
-    :param dict schema: Schema.
-    :param list|None patterns: Additional query patterns.
-    :param dict|None tag_keyspaces: Tag to keyspace mapping.
+    :param Config config: Configuration.
 
     :rtype: dict
     :return: Slow query log data.
@@ -831,7 +831,7 @@ def process_message(timestamp, message, tags, schema, patterns, tag_keyspaces):
     data = None
     for processor in processors:
         if processor.handles(log):
-            data = processor.process(log, schema, patterns, tag_keyspaces)
+            data = processor.process(log, config)
             break
     if not data:
         logging.debug(log)
@@ -887,11 +887,12 @@ def get_log(message):
     }
 
 
-def analyze(data):
+def analyze(data, config):
     """
     Analyze query too slow log data.
 
     :param list[dict] data: Query too slow log data.
+    :param Config config: Configuration.
 
     :rtype: dict
     :return: Analysis.
@@ -978,16 +979,16 @@ def analyze(data):
         analysis['volume_top'][minute][query_pk]['duration'] += datum['duration']
 
     # Min count
-    analysis['query'] = {k: v for k, v in analysis['query'].items() if v['count'] >= Settings.min_count}
-    analysis['query_pk'] = {k: v for k, v in analysis['query_pk'].items() if v['count'] >= Settings.min_count}
-    analysis['primary_key'] = {k: v for k, v in analysis['primary_key'].items() if v['count'] >= Settings.min_count}
-    analysis['volume'] = {k: v for k, v in analysis['volume'].items() if v['count'] >= Settings.min_count}
+    analysis['query'] = {k: v for k, v in analysis['query'].items() if v['count'] >= config.min_count}
+    analysis['query_pk'] = {k: v for k, v in analysis['query_pk'].items() if v['count'] >= config.min_count}
+    analysis['primary_key'] = {k: v for k, v in analysis['primary_key'].items() if v['count'] >= config.min_count}
+    analysis['volume'] = {k: v for k, v in analysis['volume'].items() if v['count'] >= config.min_count}
     analysis['volume_top'] = {
         minute: {
             k: v
             for k, v
             in minute_data.items()
-            if v['count'] >= Settings.min_count
+            if v['count'] >= config.min_count
         }
         for minute, minute_data
         in analysis['volume_top'].items()
@@ -1007,17 +1008,18 @@ def analyze(data):
             v['avg_duration'] = int(v['duration'] / v['count'])
 
     # Sort and limit
-    analysis['query'] = sorted(analysis['query'].values(), key=lambda i: i[Settings.order_by], reverse=True)[:Settings.top_n]
-    analysis['query_pk'] = sorted(analysis['query_pk'].values(), key=lambda i: i[Settings.order_by], reverse=True)[
-                           :Settings.top_n]
-    analysis['primary_key'] = sorted(analysis['primary_key'].values(), key=lambda i: i[Settings.order_by],
-                                     reverse=True)[:Settings.top_n]
+    analysis['query'] = sorted(analysis['query'].values(), key=lambda i: i[config.order_by], reverse=True)[
+                        :config.top_n]
+    analysis['query_pk'] = sorted(analysis['query_pk'].values(), key=lambda i: i[config.order_by], reverse=True)[
+                           :config.top_n]
+    analysis['primary_key'] = sorted(analysis['primary_key'].values(), key=lambda i: i[config.order_by],
+                                     reverse=True)[:config.top_n]
     # Volume already sorted by timestamp
     analysis['volume'] = analysis['volume'].values()
 
     # Reduce volume top analysis: sort, limit to N per minute, and flatten.
     analysis['volume_top'] = list(itertools.chain.from_iterable([
-        sorted(v.values(), key=lambda i: i[Settings.order_by], reverse=True)[:Settings.rows_per_minute]
+        sorted(v.values(), key=lambda i: i[config.order_by], reverse=True)[:config.rows_per_minute]
         for k, v
         in analysis['volume_top'].items()
     ]))
@@ -1163,14 +1165,12 @@ class Reporter(object):
                 writer.writerow(row)
 
 
-def process_file(file_, schema, patterns, tag_keyspaces):
+def process_file(file_, config):
     """
     Process JSON slow query file.
 
     :param str file_: File.
-    :param dict schema: Schema.
-    :param list|None patterns: Additional query patterns.
-    :param dict|None tag_keyspaces: Tag: keyspaces mappings.
+    :param Config config: Configuration.
 
     :rtype: list
     :return: Slow query data.
@@ -1197,7 +1197,7 @@ def process_file(file_, schema, patterns, tag_keyspaces):
                 tags = []
             if 'Query too slow' in message:
                 try:
-                    data = process_message(timestamp, message, tags, schema, patterns, tag_keyspaces)
+                    data = process_message(timestamp, message, tags, config)
                     ret.append(data)
                 except Exception as e:
                     logging.warn(u'{}: {} {}'.format(repr(e), message, traceback.format_exc()))
@@ -1225,10 +1225,11 @@ if __name__ == '__main__':
 
     logging.basicConfig(level=logging.DEBUG if args.v else logging.INFO)
 
-    # Global execution settings
-    Settings.top_n = args.top_n
-    Settings.rows_per_minute = args.rows_per_minute
-    Settings.order_by = args.order_by
-    Settings.min_count = args.min_count
+    configuration = Config(
+        top_n=args.top_n,
+        rows_per_minute=args.rows_per_minute,
+        order_by=args.order_by,
+        min_count=args.min_count
+    )
 
-    run(args.file, args.schema, args.queries, args.tags)
+    run(configuration, args.file, args.schema, args.queries, args.tags)
