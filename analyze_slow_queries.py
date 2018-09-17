@@ -78,6 +78,9 @@ import itertools
 from argparse import ArgumentParser
 from datetime import datetime
 
+# Global incident logger
+incidentLogger = None
+
 
 class Config(object):
     """
@@ -103,7 +106,7 @@ class Config(object):
         self.min_count = min_count
         self.schema = schema or {}
         self.queries = queries
-        self.tags = tags
+        self.tags = tags or {}
 
 
 def run(config, data_files, schema_file=None, queries_file=None, tags_file=None):
@@ -198,6 +201,92 @@ class Timer(object):
         :return: Timers string.
         """
         return '\n'.join(['{}: {}'.format(k, v) for k, v in cls.get_timers().items()])
+
+
+class AggregatedLogger(logging.Logger):
+    """
+    Aggregate logs by message string and write a single log line with a count, instead of one line per occurrence.
+
+    Call `flush()` to write the logs.
+    """
+
+    def flush(self):
+        """
+        Write all aggregated logs.
+        """
+        for handler in self.handlers:
+            if hasattr(handler, 'flush_all'):
+                handler.flush_all()
+
+
+class AggregatedStreamHandler(logging.StreamHandler):
+    """
+    Aggregate logs by message string and write a single log line with a count, instead of one line per occurrence.
+
+    Call `flush_all()` to write the logs.
+    """
+
+    def __init__(self, stream=None):
+        """
+        Init.
+
+        :param stream:
+        """
+        super(AggregatedStreamHandler, self).__init__(stream)
+        self.queue = {}
+
+    def emit(self, record):
+        """
+        Emit a record.
+
+        :param logging.LogRecord record: Log record.
+        """
+        msg = self.format(record)
+        try:
+            self.queue[msg]['count'] += 1
+        except KeyError:
+            self.queue[msg] = {
+                'count': 1,
+            }
+
+    def flush_all(self):
+        """
+        Write all aggregated logs.
+        """
+        for msg, data in sorted(self.queue.items(), key=lambda (k, v): v['count']):
+            self.write(msg + u' (' + str(data['count']) + u')')
+        self.queue = {}
+
+    def write(self, msg):
+        """
+        Write a message to the stream.
+        """
+        try:
+            stream = self.stream
+            fs = "%s\n"
+            if not logging._unicode:  # if no unicode support...
+                stream.write(fs % msg)
+            else:
+                try:
+                    if (isinstance(msg, unicode) and getattr(stream, 'encoding', None)):
+                        ufs = u'%s\n'
+                        try:
+                            stream.write(ufs % msg)
+                        except UnicodeEncodeError:
+                            # Printing to terminals sometimes fails. For example,
+                            # with an encoding of 'cp1251', the above write will
+                            # work if written to a stream opened or wrapped by
+                            # the codecs module, but fail when writing to a
+                            # terminal even when the codepage is set to cp1251.
+                            # An extra encoding step seems to be needed.
+                            stream.write((ufs % msg).encode(stream.encoding))
+                    else:
+                        stream.write(fs % msg)
+                except UnicodeError:
+                    stream.write(fs % msg.encode("UTF-8"))
+            self.flush()
+        except (KeyboardInterrupt, SystemExit):
+            raise
 
 
 def str_slice(string, before, after):
@@ -403,11 +492,11 @@ class MessageProcessor(object):
                 try:
                     primary_key.append(bound_values[field])
                 except KeyError:
-                    logging.warn(
+                    incidentLogger.warn(
                         u'Primary key field {} not in bound values for {}.{}'.format(field, keyspace, column_family))
             return '-'.join(primary_key)
         except KeyError:
-            logging.warn(u'No schema for {}.{}. Tags: {}'.format(keyspace, column_family, ', '.join(config.tags)))
+            incidentLogger.warn(u'No schema for {}.{}. Tags: {}'.format(keyspace, column_family, ', '.join(config.tags)))
             return None
 
     @classmethod
@@ -544,7 +633,7 @@ class SelectMessageProcessor(MessageProcessor):
         if log['bound_values']:
             bound_values = cls._get_bound_values(log['bound_values'])
         elif '=?' in query:
-            logging.warn(u'Query has parameters, but no bound values logged %s', query)
+            incidentLogger.warn(u'Query has parameters, but no bound values logged %s', query)
         if config.queries:
             for pattern in config.queries:
                 if QueryPattern.matches(query, pattern):
@@ -556,7 +645,7 @@ class SelectMessageProcessor(MessageProcessor):
         if table_segment:
             keyspace, column_family = cls._get_keyspace_cf(table_segment, log['tags'], config)
             if not keyspace:
-                logging.warn(u'Unable to get keyspace for column family %s. Tags: %s',
+                incidentLogger.warn(u'Unable to get keyspace for column family %s. Tags: %s',
                              column_family, ', '.join(log['tags']))
         else:
             logging.warn(u'Unable to parse table segment out of %s', query)
@@ -637,7 +726,7 @@ class InsertMessageProcessor(MessageProcessor):
         if table_segment:
             keyspace, column_family = cls._get_keyspace_cf(table_segment, log['tags'], config)
             if not keyspace:
-                logging.warn(u'Unable to get keyspace for column family %s', column_family)
+                incidentLogger.warn(u'Unable to get keyspace for column family %s', column_family)
         else:
             logging.warn(u'Unable to parse table segment out of %s', log['query'])
             keyspace = None
@@ -1226,6 +1315,8 @@ if __name__ == '__main__':
     parser.add_argument('-v', action='store_true', default=False, help='Verbose output')
     args = parser.parse_args()
 
+    incidentLogger = AggregatedLogger('incidents')
+    incidentLogger.addHandler(AggregatedStreamHandler())
     logging.basicConfig(level=logging.DEBUG if args.v else logging.INFO)
 
     configuration = Config(
@@ -1236,3 +1327,4 @@ if __name__ == '__main__':
     )
 
     run(configuration, args.file, args.schema, args.queries, args.tags)
+    incidentLogger.flush()
