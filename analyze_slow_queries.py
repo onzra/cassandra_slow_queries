@@ -173,7 +173,7 @@ class Timer(object):
             raise Exception('Timer {} not started'.format(name))
         cls.timers[name]['end'] = time.time()
         duration = cls.timers[name]['end'] - cls.timers[name]['start']
-        if 'duration' in cls.timers:
+        if 'duration' in cls.timers[name]:
             cls.timers[name]['duration'] += duration
         else:
             cls.timers[name]['duration'] = duration
@@ -380,7 +380,7 @@ class MessageProcessor(object):
                 ret[key] = value
             except ValueError:
                 if 'in(' not in bound_values_str and 'truncated output' not in bound_values_str:
-                    logging.warn(u'Bad bound values {}'.format(bound_values_str))
+                    logging.warn(u'Bad bound values %s', bound_values_str)
         return ret
 
     @classmethod
@@ -543,10 +543,13 @@ class SelectMessageProcessor(MessageProcessor):
         bound_values = {}
         if log['bound_values']:
             bound_values = cls._get_bound_values(log['bound_values'])
-        elif config.queries:
+        elif '=?' in query:
+            logging.warn(u'Query has parameters, but no bound values logged %s', query)
+        if config.queries:
             for pattern in config.queries:
                 if QueryPattern.matches(query, pattern):
-                    query, bound_values = QueryPattern.process(query, pattern)
+                    query, bound_values_pattern = QueryPattern.process(query, pattern)
+                    bound_values.update(bound_values_pattern)
                     break
 
         table_segment = cls._get_table(query)
