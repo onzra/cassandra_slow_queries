@@ -1276,27 +1276,28 @@ def process_file(file_, config):
     Timer.end('json_loading')
     logging.info('Processing log messages')
     Timer.start('processing')
-    for hit in data['hits']['hits']:
-        try:
-            timestamp = hit['_source']['@timestamp']
+    for response in data['responses']:
+        for hit in response['hits']['hits']:
             try:
-                message = hit['_source']['message']
-            except KeyError:
-                message = hit['_source']['@message']
-            try:
-                tags = hit['_source']['tags']
-            except KeyError:
-                tags = []
-            if 'Query too slow' in message:
+                timestamp = hit['_source']['@timestamp']
                 try:
-                    data = process_message(timestamp, message, tags, config)
-                    ret.append(data)
-                except Exception as e:
-                    logging.warn(u'{}: {} {}'.format(repr(e), message, traceback.format_exc()))
-            else:
-                logging.warn(u'Not query too slow {}'.format(message))
-        except KeyError:
-            logging.warn(u'Invalid hit {}'.format(json.dumps(hit)))
+                    message = hit['_source']['message']
+                except KeyError:
+                    message = hit['_source']['@message']
+                try:
+                    tags = hit['_source']['tags']
+                except KeyError:
+                    tags = []
+                if 'Query too slow' in message:
+                    try:
+                        data = process_message(timestamp, message, tags, config)
+                        ret.append(data)
+                    except Exception as e:
+                        logging.warn(u'{}: {} {}'.format(repr(e), message, traceback.format_exc()))
+                else:
+                    logging.warn(u'Not query too slow {}'.format(message))
+            except KeyError:
+                logging.warn(u'Invalid hit {}'.format(json.dumps(hit)))
     Timer.end('processing')
     return ret
 
