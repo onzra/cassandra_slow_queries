@@ -36,7 +36,7 @@ DEFAULT_SIZE = 10000
 QUERY_STRING = 'Query too slow'
 
 
-def run(url, index, cookie, size, start=None, end=None):
+def run(url, index, cookie, size, start=None, end=None, query=None):
     """
     Run.
 
@@ -46,19 +46,20 @@ def run(url, index, cookie, size, start=None, end=None):
     :param int size: Request size.
     :param str|None start: Start time.
     :param str|None end: End time.
+    :param str|None query: Additional query string.
     """
     # Get start and end times
     start, end = get_time_interval(start, end)
     logging.info('Requesting logs from {} to {}'.format(start, end))
     # Download first page
     filename = _get_filename(start, 0)
-    _download_page(url, index, cookie, QUERY_STRING, start, end, size, 0, filename)
+    _download_page(url, index, cookie, QUERY_STRING, start, end, size, 0, filename, query)
     # Determine total page count
     total_pages = _determine_pages(size, filename)
     # Download remaining pages
     for i in range(1, total_pages):
         filename = _get_filename(start, i)
-        _download_page(url, index, cookie, QUERY_STRING, start, end, size, i, filename)
+        _download_page(url, index, cookie, QUERY_STRING, start, end, size, i, filename, query)
     logging.info('Download complete')
 
 
@@ -122,24 +123,25 @@ def _log_failures(filename):
             logging.error('Elasticsearch failure: "%s"', failure['reason']['reason'])
 
 
-def _download_page(url, index, cookie, query, start, end, size, page, filename):
+def _download_page(url, index, cookie, message, start, end, size, page, filename, query):
     """
     Download one page of results.
 
     :param str url: URL.
     :param str index: Index name.
     :param str cookie: Cookie data.
-    :param str query: Query string.
+    :param str message: Query string.
     :param arrow.Arrow start: Start time.
     :param arrow.Arrow end: End time.
     :param int size: Size.
     :param int page: Page number.
     :param str filename: Filename.
+    :param str|None query: Additional query string.
     """
     from_ = page * size
     logging.info('Requesting {} records starting at {}'.format(size, from_))
     header = build_request_header(index)
-    body = build_request_body(query, start, end, size, from_)
+    body = build_request_body(message, start, end, size, from_, query)
     http_body = '{}\n{}\n'.format(header, body)
     logging.debug(json.dumps(json.loads(header), indent=2))
     logging.debug(json.dumps(json.loads(body), indent=2))
@@ -169,15 +171,16 @@ def get_time_interval(start=None, end=None):
     return start, end
 
 
-def build_request_body(query, start, end, size, from_=0):
+def build_request_body(message, start, end, size, from_=0, query=None):
     """
     Build elastic search request body.
 
-    :param str query: Query string.
+    :param str message: Message query string, "Query too slow".
     :param arrow.Arrow start: Start time.
     :param arrow.Arrow end: End time.
     :param int size: Size.
     :param int from_: From record number.
+    :param str|None query: Additional query string.
 
     :rtype: str
     :return: Request body.
@@ -189,7 +192,7 @@ def build_request_body(query, start, end, size, from_=0):
                     {
                         "match_phrase": {
                             "message": {
-                                "query": query
+                                "query": message
                             }
                         }
                     },
@@ -216,6 +219,14 @@ def build_request_body(query, start, end, size, from_=0):
             }
         ]
     }
+    if query:
+        body['query']['bool']['must'].append({
+            "query_string": {
+                "query": "\"{}\"".format(query),
+                "analyze_wildcard": True,
+                "default_field": "*"
+            }
+        })
 
     return json.dumps(body)
 
@@ -319,6 +330,7 @@ if __name__ == '__main__':
     parser.add_argument('--from-curl', help='Parse parameters from curl command file')
     parser.add_argument('--start', help='Start time')
     parser.add_argument('--end', help='End time')
+    parser.add_argument('--query', help='Additional query string')
     parser.add_argument('--size', help='Request size', default=DEFAULT_SIZE, type=int)
     parser.add_argument('-v', help='Verbose output', action='store_true', default=False)
     args = parser.parse_args()
@@ -332,4 +344,4 @@ if __name__ == '__main__':
         index = args.index
         cookie = _read_cookie(args.cookie)
 
-    run(url, index, cookie, args.size, args.start, args.end)
+    run(url, index, cookie, args.size, args.start, args.end, args.query)
