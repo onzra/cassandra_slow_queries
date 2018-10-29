@@ -137,6 +137,9 @@ def run(config, data_files, schema_file=None, queries_file=None, tags_file=None)
     processed = []
     for f in data_files:
         processed += process_file(f, config)
+    # Dump processed json data to file
+    with open('processed.json', 'w+') as fp:
+        json.dump(processed, fp, default=str)
     # Analyze
     analysis = analyze(processed, config)
     # Write reports
@@ -496,7 +499,8 @@ class MessageProcessor(object):
                         u'Primary key field {} not in bound values for {}.{}'.format(field, keyspace, column_family))
             return '-'.join(primary_key)
         except KeyError:
-            incidentLogger.warn(u'No schema for {}.{}. Tags: {}'.format(keyspace, column_family, ', '.join(config.tags)))
+            incidentLogger.warn(
+                u'No schema for {}.{}. Tags: {}'.format(keyspace, column_family, ', '.join(config.tags)))
             return None
 
     @classmethod
@@ -646,7 +650,7 @@ class SelectMessageProcessor(MessageProcessor):
             keyspace, column_family = cls._get_keyspace_cf(table_segment, log['tags'], config)
             if not keyspace:
                 incidentLogger.warn(u'Unable to get keyspace for column family %s. Tags: %s',
-                             column_family, ', '.join(log['tags']))
+                                    column_family, ', '.join(log['tags']))
         else:
             logging.warn(u'Unable to parse table segment out of %s', query)
             keyspace = None
@@ -1276,27 +1280,28 @@ def process_file(file_, config):
     Timer.end('json_loading')
     logging.info('Processing log messages')
     Timer.start('processing')
-    for hit in data['hits']['hits']:
-        try:
-            timestamp = hit['_source']['@timestamp']
+    for response in data['responses']:
+        for hit in response['hits']['hits']:
             try:
-                message = hit['_source']['message']
-            except KeyError:
-                message = hit['_source']['@message']
-            try:
-                tags = hit['_source']['tags']
-            except KeyError:
-                tags = []
-            if 'Query too slow' in message:
+                timestamp = hit['_source']['@timestamp']
                 try:
-                    data = process_message(timestamp, message, tags, config)
-                    ret.append(data)
-                except Exception as e:
-                    logging.warn(u'{}: {} {}'.format(repr(e), message, traceback.format_exc()))
-            else:
-                logging.warn(u'Not query too slow {}'.format(message))
-        except KeyError:
-            logging.warn(u'Invalid hit {}'.format(json.dumps(hit)))
+                    message = hit['_source']['message']
+                except KeyError:
+                    message = hit['_source']['@message']
+                try:
+                    tags = hit['_source']['tags']
+                except KeyError:
+                    tags = []
+                if 'Query too slow' in message:
+                    try:
+                        data = process_message(timestamp, message, tags, config)
+                        ret.append(data)
+                    except Exception as e:
+                        logging.warn(u'{}: {} {}'.format(repr(e), message, traceback.format_exc()))
+                else:
+                    logging.warn(u'Not query too slow {}'.format(message))
+            except KeyError:
+                logging.warn(u'Invalid hit {}'.format(json.dumps(hit)))
     Timer.end('processing')
     return ret
 
