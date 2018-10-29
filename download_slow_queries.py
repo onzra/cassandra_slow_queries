@@ -296,6 +296,7 @@ def execute_curl(cmd, output_file):
         p = subprocess.Popen(cmd, stdout=fh)
         p.wait()
 
+
 def _from_curl(curl_file):
     """
     Parse URL, index, and cookie from curl command file.
@@ -307,11 +308,11 @@ def _from_curl(curl_file):
     """
     with open(curl_file, 'r') as fh:
         command = fh.read().strip(' \n')
-    # curl 'https://logs-noram.wbx2.com/elasticsearch/_msearch'
+    # curl 'https://es.example.com/es/_msearch'
     start = command.find('curl ') + len('curl ')
     end = command.find(' ', start)
     url = command[start:end].strip('\'"')
-    # --data-binary $'{"index":"logs6achm4-es-app:log*",
+    # --data-binary $'{"index":"es-index:log*",
     start = command.find('"index":"') + len('"index":"')
     end = command.find('"', start)
     index = command[start:end]
@@ -320,6 +321,7 @@ def _from_curl(curl_file):
     end = command.find('\'', start)
     cookie = command[start:end]
     return url, index, cookie
+
 
 def _read_cookie(cookie_file):
     """
@@ -333,6 +335,7 @@ def _read_cookie(cookie_file):
     with open(cookie_file, 'r') as fh:
         cookie = fh.read().strip(' \n')
     return cookie
+
 
 if __name__ == '__main__':
     parser = ArgumentParser()

@@ -499,7 +499,8 @@ class MessageProcessor(object):
                         u'Primary key field {} not in bound values for {}.{}'.format(field, keyspace, column_family))
             return '-'.join(primary_key)
         except KeyError:
-            incidentLogger.warn(u'No schema for {}.{}. Tags: {}'.format(keyspace, column_family, ', '.join(config.tags)))
+            incidentLogger.warn(
+                u'No schema for {}.{}. Tags: {}'.format(keyspace, column_family, ', '.join(config.tags)))
             return None
 
     @classmethod
@@ -649,7 +650,7 @@ class SelectMessageProcessor(MessageProcessor):
             keyspace, column_family = cls._get_keyspace_cf(table_segment, log['tags'], config)
             if not keyspace:
                 incidentLogger.warn(u'Unable to get keyspace for column family %s. Tags: %s',
-                             column_family, ', '.join(log['tags']))
+                                    column_family, ', '.join(log['tags']))
         else:
             logging.warn(u'Unable to parse table segment out of %s', query)
             keyspace = None
