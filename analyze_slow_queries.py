@@ -109,7 +109,7 @@ class Config(object):
         self.tags = tags or {}
 
 
-def run(config, data_files, schema_file=None, queries_file=None, tags_file=None, dump_data=False):
+def run(config, data_files, schema_file=None, queries_file=None, tags_file=None):
     """
     Run.
 
@@ -118,7 +118,6 @@ def run(config, data_files, schema_file=None, queries_file=None, tags_file=None,
     :param str|None schema_file: Schema file.
     :param str|None queries_file: Additional query patterns file.
     :param str|None tags_file: Tag: keyspace mapping file.
-    :param bool dump_data: Write processed JSON data to a file.
     """
     Timer.start('total')
     # Load additional query patterns
@@ -138,9 +137,9 @@ def run(config, data_files, schema_file=None, queries_file=None, tags_file=None,
     processed = []
     for f in data_files:
         processed += process_file(f, config)
-    if dump_data:
-        with open('processed.json', 'w+') as fp:
-            json.dump(processed, fp, default=str)
+    # Dump processed json data to file
+    with open('processed.json', 'w+') as fp:
+        json.dump(processed, fp, default=str)
     # Analyze
     analysis = analyze(processed, config)
     # Write reports
@@ -1317,7 +1316,6 @@ if __name__ == '__main__':
     parser.add_argument('--min-count', help='Minimum number of occurrences', type=int, default=5)
     parser.add_argument('--order-by', help='Order results by', default='duration',
                         choices=['duration', 'avg_duration', 'count'])
-    parser.add_argument('--dump-data', help='Write processed JSON data to file', action='store_true', default=False)
     parser.add_argument('-v', action='store_true', default=False, help='Verbose output')
     args = parser.parse_args()
 
@@ -1332,5 +1330,5 @@ if __name__ == '__main__':
         min_count=args.min_count
     )
 
-    run(configuration, args.file, args.schema, args.queries, args.tags, args.dump_data)
+    run(configuration, args.file, args.schema, args.queries, args.tags)
     incidentLogger.flush()
