@@ -10,6 +10,11 @@ Example usage:
 
     ./download_slow_queries.py --from-curl curl.txt
 
+Start time and end time can be supplied. Will always use your system local timezone. If no date is provided, will
+assume today's date.
+
+   ./download_slow_queries.py --start "10:00:00" --end "11:00:00"
+
 Alternatively you can supply the URL, index, and a cookie file:
 
     ./download_slow_queries.py --url "https://es.example.com/es/_msearch" --index "my-index:log*" --cookie cookie.txt
@@ -161,13 +166,20 @@ def get_time_interval(start=None, end=None):
     :rtype: tuple(arrow.Arrow, arrow.Arrow)
     :return: Start time, end time.
     """
-    if start and end:
-        return arrow.get(start), arrow.get(end)
-    if start or end:
+    if not start and not end:
+        # Default to 5am - 12pm
+        end = arrow.now().replace(hour=12, minute=0, second=0)
+        start = end.replace(hour=5, minute=0, second=0)
+    elif not start or not end:
         raise Exception('Must provide both start and end time')
-    # Default to 5am - 12pm
-    end = arrow.now().replace(hour=12, minute=0, second=0)
-    start = end.replace(hour=5, minute=0, second=0)
+    else:
+        # Allow only supplying time part and using today's date
+        if '-' not in start:
+            start = '{} {}'.format(arrow.now().format('YYYY-MM-DD'), start)
+        if '-' not in end:
+            end = '{} {}'.format(arrow.now().format('YYYY-MM-DD'), end)
+        start = arrow.get(start).replace(tzinfo='local')
+        end = arrow.get(end).replace(tzinfo='local')
     return start, end
 
 
